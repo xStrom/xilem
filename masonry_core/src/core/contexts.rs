@@ -1705,7 +1705,7 @@ impl_context_method!(
 
                 if let Some(layers) = global_state.attached_layers.remove(&state.id) {
                     for (_, layer_id) in layers {
-                        global_state.emit_signal(RenderRootSignal::RemoveLayer(layer_id));
+                        global_state.queue_remove_layer(layer_id);
                     }
                 }
             }
@@ -2044,11 +2044,8 @@ impl_context_method!(
                 return;
             }
 
-            self.global_state.emit_signal(RenderRootSignal::NewLayer(
-                layer_type,
-                fallback_widget.erased(),
-                position,
-            ));
+            self.global_state
+                .queue_new_layer(layer_type, fallback_widget.erased(), position);
         }
 
         /// Creates a new [layer] at a specified `position`, and ties it to the current widget.
@@ -2089,14 +2086,10 @@ impl_context_method!(
                 .entry(self.widget_id())
                 .or_default();
             if let Some(prev) = layers.insert(TypeId::of::<W>(), layer_id) {
-                self.global_state
-                    .emit_signal(RenderRootSignal::RemoveLayer(prev));
+                self.global_state.queue_remove_layer(prev);
             }
-            self.global_state.emit_signal(RenderRootSignal::NewLayer(
-                layer_type,
-                fallback_widget.erased(),
-                position,
-            ));
+            self.global_state
+                .queue_new_layer(layer_type, fallback_widget.erased(), position);
         }
 
         /// Returns the attached layer created by this widget with the given type `W`.
@@ -2113,8 +2106,7 @@ impl_context_method!(
         /// Removes the layer with the specified widget as root.
         pub fn remove_layer(&mut self, root_widget_id: WidgetId) {
             trace!("remove_layer");
-            self.global_state
-                .emit_signal(RenderRootSignal::RemoveLayer(root_widget_id));
+            self.global_state.queue_remove_layer(root_widget_id);
 
             let Some(layers) = self.global_state.attached_layers.get_mut(&self.widget_id()) else {
                 return;
@@ -2135,7 +2127,7 @@ impl_context_method!(
         pub fn reposition_layer(&mut self, root_widget_id: WidgetId, position: Point) {
             trace!("reposition_layer");
             self.global_state
-                .emit_signal(RenderRootSignal::RepositionLayer(root_widget_id, position));
+                .queue_reposition_layer(root_widget_id, position);
         }
     }
 );

@@ -218,7 +218,6 @@ fn create_render_root(root_widget: NewWidget<impl Widget>) -> RenderRoot {
     let test_font = Blob::new(Arc::new(ROBOTO));
     RenderRoot::new(
         root_widget,
-        |_| {},
         RenderRootOptions {
             default_properties: Arc::new(test_property_set()),
             use_system_fonts: false,

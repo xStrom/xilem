@@ -23,7 +23,7 @@ use std::fs::File;
 use std::io::{BufReader, Cursor};
 use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use image::{DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage};
@@ -144,7 +144,6 @@ pub const PRIMARY_MOUSE: PointerInfo = PointerInfo {
 /// [`insta`]: https://docs.rs/insta/latest/insta/
 #[derive(Debug)]
 pub struct TestHarness<W: Widget> {
-    signal_receiver: mpsc::Receiver<RenderRootSignal>,
     render_root: RenderRoot,
     access_tree: accesskit_consumer::Tree,
     renderer: Option<VelloCpuRenderer>,
@@ -382,8 +381,6 @@ impl<W: Widget> TestHarness<W> {
 
         let data = Blob::new(Arc::new(ROBOTO));
 
-        let (signal_sender, signal_receiver) = mpsc::channel::<RenderRootSignal>();
-
         let dummy_tree_update = TreeUpdate {
             tree_id: TreeId::ROOT,
             nodes: vec![(0.into(), Node::new(Role::Window))],
@@ -395,10 +392,8 @@ impl<W: Widget> TestHarness<W> {
             focus: 0.into(),
         };
         let mut harness = Self {
-            signal_receiver,
             render_root: RenderRoot::new(
                 root_widget,
-                move |signal| signal_sender.send(signal).unwrap(),
                 RenderRootOptions {
                     default_properties: Arc::new(default_props),
                     use_system_fonts: false,
@@ -483,8 +478,8 @@ impl<W: Widget> TestHarness<W> {
         if self.panic_on_rewrite_saturation && self.render_root.needs_rewrite_passes() {
             panic!("Loop detected in rewrite passes");
         }
-        while let Some(signal) = self.signal_receiver.try_iter().next() {
-            match signal {
+        self.render_root
+            .process_signals(|render_root, signal| match signal {
                 RenderRootSignal::Action(action, widget_id) => {
                     self.action_queue.push_back((action, widget_id));
                 }
@@ -506,7 +501,7 @@ impl<W: Widget> TestHarness<W> {
                 RenderRootSignal::SetCursor(_) => (),
                 RenderRootSignal::SetSize(physical_size) => {
                     self.window_size = physical_size;
-                    self.process_window_event(WindowEvent::Resize(physical_size));
+                    render_root.handle_window_event(WindowEvent::Resize(physical_size));
                 }
                 RenderRootSignal::SetTitle(title) => {
                     self.title = title;
@@ -518,14 +513,9 @@ impl<W: Widget> TestHarness<W> {
                 RenderRootSignal::Exit => (),
                 RenderRootSignal::ShowWindowMenu(_) => (),
                 RenderRootSignal::WidgetSelectedInInspector(_) => (),
-                RenderRootSignal::NewLayer(_type, root, pos) => {
-                    self.render_root.add_layer(root, pos);
-                }
-                RenderRootSignal::RemoveLayer(root_id) => self.render_root.remove_layer(root_id),
-                RenderRootSignal::RepositionLayer(root_id, new_pos) => {
-                    self.render_root.reposition_layer(root_id, new_pos);
-                }
-            }
+            });
+        if self.panic_on_rewrite_saturation && self.render_root.needs_rewrite_passes() {
+            panic!("Loop detected in rewrite passes");
         }
     }
 

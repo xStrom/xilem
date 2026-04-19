@@ -1,10 +1,9 @@
 // Copyright 2024 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use accesskit_winit::Adapter;
 use copypasta::nop_clipboard::NopClipboardContext;
@@ -141,7 +140,6 @@ impl Window {
         handle: Arc<WindowHandle>,
         accesskit_adapter: Adapter,
         root_widget: NewWidget<dyn Widget>,
-        signal_sender: Sender<(WindowId, RenderRootSignal)>,
         default_properties: Arc<DefaultProperties>,
         base_color: Color,
         size: PhysicalSize<u32>,
@@ -154,9 +152,6 @@ impl Window {
             event_reducer: WindowEventReducer::default(),
             render_root: RenderRoot::new(
                 root_widget,
-                move |signal| {
-                    signal_sender.clone().send((window_id, signal)).unwrap();
-                },
                 RenderRootOptions {
                     default_properties,
                     use_system_fonts: true,
@@ -228,9 +223,6 @@ pub struct MasonryState<'a> {
 
     // Is `Some` if the most recently displayed frame was an animation frame.
     last_anim: Option<Instant>,
-    signal_receiver: mpsc::Receiver<(WindowId, RenderRootSignal)>,
-
-    signal_sender: Sender<(WindowId, RenderRootSignal)>,
     default_properties: Arc<DefaultProperties>,
     pub(crate) exit: bool,
     /// Windows that are scheduled to be created in the next resumed event.
@@ -371,8 +363,6 @@ impl<'a> Debug for MasonryState<'a> {
             .field("surfaces", &self.surfaces)
             .field("windows", &self.windows)
             .field("last_anim", &self.last_anim)
-            .field("signal_receiver", &self.signal_receiver)
-            .field("signal_sender", &self.signal_sender)
             .field("default_properties", &self.default_properties)
             .field("exit", &self.exit)
             .field("new_windows", &self.new_windows)
@@ -399,8 +389,6 @@ impl MasonryState<'_> {
 
         let render_cx = RenderContext::new();
 
-        let (signal_sender, signal_receiver) = mpsc::channel::<(WindowId, RenderRootSignal)>();
-
         let clipboard_cx =
             ClipboardContext::new().map(|cx| -> Box<dyn ClipboardProvider> { Box::new(cx) });
         let clipboard_cx = if cfg!(target_os = "linux") {
@@ -418,7 +406,6 @@ impl MasonryState<'_> {
             event_loop_proxy,
             #[cfg(feature = "tracy")]
             frame: None,
-            signal_receiver,
 
             last_anim: None,
             window_id_to_handle_id: HashMap::new(),
@@ -429,7 +416,6 @@ impl MasonryState<'_> {
 
             clipboard_cx,
 
-            signal_sender,
             default_properties: Arc::new(default_properties),
             exit: false,
             new_windows,
@@ -573,7 +559,6 @@ impl MasonryState<'_> {
             handle,
             adapter,
             new_window.root_widget,
-            self.signal_sender.clone(),
             self.default_properties.clone(),
             new_window.base_color,
             size,
@@ -1023,23 +1008,24 @@ impl MasonryState<'_> {
         }
 
         let mut need_redraw = HashSet::<HandleId>::new();
+        let mut pending_signals = VecDeque::<(HandleId, RenderRootSignal)>::new();
 
         loop {
-            let Some((window_id, signal)) = self.signal_receiver.try_iter().next() else {
-                break;
-            };
-
-            let Some(handle_id) = self.window_id_to_handle_id.get(&window_id) else {
-                tracing::warn!(id = ?window_id, signal = ?signal, "Got a signal for an unknown window");
+            let Some((handle_id, signal)) = pending_signals.pop_front() else {
+                self.collect_pending_signals(&mut pending_signals);
+                if pending_signals.is_empty() {
+                    break;
+                }
                 continue;
             };
 
-            let window = self.windows.get_mut(handle_id).unwrap();
-            let handle = &window.handle;
+            let Some(window_id) = self.windows.get(&handle_id).map(|window| window.id) else {
+                tracing::warn!(handle = ?handle_id, signal = ?signal, "Got a signal for an unknown window");
+                continue;
+            };
 
             match signal {
                 RenderRootSignal::Action(action, widget_id) => {
-                    let window_id = window.id;
                     trace!(
                         "Action {:?} on widget {:?}",
                         (*action).type_name(),
@@ -1053,61 +1039,106 @@ impl MasonryState<'_> {
                     );
                 }
                 RenderRootSignal::StartIme => {
-                    handle.set_ime_allowed(true);
+                    self.windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .set_ime_allowed(true);
                 }
                 RenderRootSignal::EndIme => {
-                    handle.set_ime_allowed(false);
+                    self.windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .set_ime_allowed(false);
                 }
                 RenderRootSignal::ImeMoved(position, size) => {
-                    handle.set_ime_cursor_area(position, size);
+                    self.windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .set_ime_cursor_area(position, size);
                 }
                 RenderRootSignal::ClipboardStore(text) => {
                     self.clipboard_cx.set_contents(text).unwrap();
                 }
                 RenderRootSignal::RequestRedraw => {
-                    need_redraw.insert(*handle_id);
+                    need_redraw.insert(handle_id);
                 }
                 RenderRootSignal::RequestAnimFrame => {
                     // TODO
-                    need_redraw.insert(*handle_id);
+                    need_redraw.insert(handle_id);
                 }
                 RenderRootSignal::TakeFocus => {
-                    handle.focus_window();
+                    self.windows.get(&handle_id).unwrap().handle.focus_window();
                 }
                 RenderRootSignal::SetCursor(cursor) => {
-                    handle.set_cursor(cursor);
+                    self.windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .set_cursor(cursor);
                 }
                 RenderRootSignal::SetSize(size) => {
                     // TODO - Handle return value?
-                    let _ = handle.request_inner_size(size);
+                    let _ = self
+                        .windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .request_inner_size(size);
                 }
                 RenderRootSignal::SetTitle(title) => {
-                    handle.set_title(&title);
+                    self.windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .set_title(&title);
                 }
                 RenderRootSignal::DragWindow => {
                     // TODO - Handle return value?
-                    let _ = handle.drag_window();
+                    let _ = self.windows.get(&handle_id).unwrap().handle.drag_window();
                 }
                 RenderRootSignal::DragResizeWindow(direction) => {
                     // TODO - Handle return value?
                     let direction = masonry_resize_direction_to_winit(direction);
-                    let _ = handle.drag_resize_window(direction);
+                    let _ = self
+                        .windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .drag_resize_window(direction);
                 }
                 RenderRootSignal::ToggleMaximized => {
+                    let handle = &self.windows.get(&handle_id).unwrap().handle;
                     handle.set_maximized(!handle.is_maximized());
                 }
                 RenderRootSignal::Minimize => {
-                    handle.set_minimized(true);
+                    self.windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .set_minimized(true);
                 }
                 RenderRootSignal::Exit => {
                     event_loop.exit();
                 }
                 RenderRootSignal::ShowWindowMenu(position) => {
-                    handle.show_window_menu(position);
+                    self.windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .handle
+                        .show_window_menu(position);
                 }
                 RenderRootSignal::WidgetSelectedInInspector(widget_id) => {
-                    let Some(widget) = window.render_root.get_widget(widget_id) else {
-                        return;
+                    let Some(widget) = self
+                        .windows
+                        .get(&handle_id)
+                        .unwrap()
+                        .render_root
+                        .get_widget(widget_id)
+                    else {
+                        continue;
                     };
                     let widget_name = widget.short_type_name();
                     let display_name = if let Some(debug_text) = widget.get_debug_text() {
@@ -1116,13 +1147,6 @@ impl MasonryState<'_> {
                         widget_name.into()
                     };
                     info!("Widget selected in inspector: {widget_id} - {display_name}");
-                }
-                RenderRootSignal::NewLayer(_type, root, pos) => {
-                    window.render_root.add_layer(root, pos);
-                }
-                RenderRootSignal::RemoveLayer(root_id) => window.render_root.remove_layer(root_id),
-                RenderRootSignal::RepositionLayer(root_id, new_pos) => {
-                    window.render_root.reposition_layer(root_id, new_pos);
                 }
             }
         }
@@ -1140,6 +1164,21 @@ impl MasonryState<'_> {
         for handle_id in need_redraw {
             let window = self.windows.get(&handle_id).unwrap();
             window.handle.request_redraw();
+        }
+    }
+
+    fn collect_pending_signals(
+        &mut self,
+        pending_signals: &mut VecDeque<(HandleId, RenderRootSignal)>,
+    ) {
+        let handle_ids: Vec<_> = self.windows.keys().copied().collect();
+        for handle_id in handle_ids {
+            let Some(window) = self.windows.get_mut(&handle_id) else {
+                continue;
+            };
+            window
+                .render_root
+                .process_signals(|_, signal| pending_signals.push_back((handle_id, signal)));
         }
     }
 

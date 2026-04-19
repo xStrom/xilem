@@ -14,5 +14,6 @@ mod layout;
 mod mutate;
 mod paint;
 mod properties;
+mod signals;
 mod update;
 mod widget_tag;

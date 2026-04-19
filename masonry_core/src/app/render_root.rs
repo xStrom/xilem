@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use accesskit::{ActionRequest, NodeId, TreeId, TreeUpdate};
@@ -70,8 +70,12 @@ pub struct RenderRoot {
 
 /// State shared between passes.
 pub(crate) struct RenderRootState {
-    /// Sink for signals to be processed by the event loop.
-    pub(crate) signal_sink: Box<dyn FnMut(RenderRootSignal)>,
+    /// Pending work emitted by the widget tree.
+    ///
+    /// Host-facing signals are drained through [`RenderRoot::process_signals`].
+    /// Internal root operations are also applied there so hosts don't need to
+    /// bounce them back into the root.
+    pending_signals: VecDeque<PendingSignal>,
 
     /// The accessibility pass creates a wrapper node for the app with `Role::Window`.
     ///
@@ -279,17 +283,16 @@ pub enum RenderRootSignal {
     ShowWindowMenu(LogicalPosition<f64>),
     /// The widget picker has selected this widget.
     WidgetSelectedInInspector(WidgetId),
-    /// A new [layer] should be created with the widget as root.
-    ///
-    /// The given [`Point`] must be in the window's coordinate space.
-    ///
-    /// [layer]: crate::doc::masonry_concepts#layers
+}
+
+enum PendingSignal {
+    Host(RenderRootSignal),
+    RootOp(PendingRootOp),
+}
+
+enum PendingRootOp {
     NewLayer(LayerType, NewWidget<dyn Widget>, Point),
-    /// The layer with the given widget as root should be removed.
     RemoveLayer(WidgetId),
-    /// The layer with the given widget as root should be repositioned to the specified point.
-    ///
-    /// The given [`Point`] must be in the window's coordinate space.
     RepositionLayer(WidgetId, Point),
 }
 
@@ -312,11 +315,7 @@ impl RenderRoot {
     /// Note that this doesn't create a window or start an event loop.
     /// The `masonry` crate doesn't provide a way to do that:
     /// look for `masonry_winit::app::run` instead.
-    pub fn new(
-        root_widget: NewWidget<impl Widget + ?Sized>,
-        signal_sink: impl FnMut(RenderRootSignal) + 'static,
-        options: RenderRootOptions,
-    ) -> Self {
+    pub fn new(root_widget: NewWidget<impl Widget + ?Sized>, options: RenderRootOptions) -> Self {
         let RenderRootOptions {
             default_properties,
             use_system_fonts,
@@ -337,7 +336,7 @@ impl RenderRoot {
         let mut root = Self {
             layer_stack,
             global_state: RenderRootState {
-                signal_sink: Box::new(signal_sink),
+                pending_signals: VecDeque::new(),
                 window_node_id: AccessCtx::next_node_id(),
                 size_policy,
                 size,
@@ -584,6 +583,26 @@ impl RenderRoot {
         let tree_update = access_tree_active
             .then(|| run_accessibility_pass(self, self.global_state.scale_factor));
         (visual_layers, tree_update)
+    }
+
+    /// Drains host-facing signals and internal deferred root work until the root is stable.
+    ///
+    /// The handler may freely mutate the root. If that emits more signals, this
+    /// method will continue draining until there is no pending work left.
+    ///
+    /// Mutations performed here should go through the normal `RenderRoot`
+    /// mutation APIs, which already run rewrite passes as needed.
+    pub fn process_signals(&mut self, mut handler: impl FnMut(&mut RenderRoot, RenderRootSignal)) {
+        loop {
+            let Some(pending_signal) = self.global_state.pop_pending_signal() else {
+                break;
+            };
+
+            match pending_signal {
+                PendingSignal::Host(signal) => handler(self, signal),
+                PendingSignal::RootOp(op) => self.process_root_op(op),
+            }
+        }
     }
 
     /// Returns the current icon that the mouse should display.
@@ -978,6 +997,16 @@ impl RenderRoot {
     pub fn emit_signal(&mut self, signal: RenderRootSignal) {
         self.global_state.emit_signal(signal);
     }
+
+    fn process_root_op(&mut self, op: PendingRootOp) {
+        match op {
+            PendingRootOp::NewLayer(_layer_type, root, position) => self.add_layer(root, position),
+            PendingRootOp::RemoveLayer(root_id) => self.remove_layer(root_id),
+            PendingRootOp::RepositionLayer(root_id, position) => {
+                self.reposition_layer(root_id, position);
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for RenderRoot {
@@ -1004,7 +1033,38 @@ impl std::fmt::Debug for RenderRootState {
 impl RenderRootState {
     /// Sends a signal to the runner of this app, which allows global actions to be triggered by a widget.
     pub(crate) fn emit_signal(&mut self, signal: RenderRootSignal) {
-        (self.signal_sink)(signal);
+        self.pending_signals.push_back(PendingSignal::Host(signal));
+    }
+
+    /// Queues a new layer to be applied by [`RenderRoot::process_signals`].
+    pub(crate) fn queue_new_layer(
+        &mut self,
+        layer_type: LayerType,
+        root: NewWidget<dyn Widget>,
+        position: Point,
+    ) {
+        self.pending_signals
+            .push_back(PendingSignal::RootOp(PendingRootOp::NewLayer(
+                layer_type, root, position,
+            )));
+    }
+
+    /// Queues a layer removal to be applied by [`RenderRoot::process_signals`].
+    pub(crate) fn queue_remove_layer(&mut self, root_id: WidgetId) {
+        self.pending_signals
+            .push_back(PendingSignal::RootOp(PendingRootOp::RemoveLayer(root_id)));
+    }
+
+    /// Queues a layer reposition to be applied by [`RenderRoot::process_signals`].
+    pub(crate) fn queue_reposition_layer(&mut self, root_id: WidgetId, position: Point) {
+        self.pending_signals
+            .push_back(PendingSignal::RootOp(PendingRootOp::RepositionLayer(
+                root_id, position,
+            )));
+    }
+
+    fn pop_pending_signal(&mut self) -> Option<PendingSignal> {
+        self.pending_signals.pop_front()
     }
 
     /// Does something in this state indicate that the rewrite passes need to be reran.
