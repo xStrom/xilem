@@ -44,6 +44,12 @@ Simple image example.
 Demonstration of the layer system with a simple tooltip.
 
 
+## `embedded_wgpu_triangle`
+
+Headless non-`winit` embedding example. A host-owned WGPU renderer composites an embedded Masonry
+button over an offscreen triangle scene and writes `before_click.png` / `after_click.png`.
+
+
 ## `gallery`
 
 A simple widget gallery showcasing a few common widgets and the "driver + mutate" architecture.

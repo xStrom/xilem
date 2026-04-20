@@ -2418,12 +2418,14 @@ dependencies = [
  "insta",
  "linebender_include_doc_path",
  "masonry_core",
+ "masonry_imaging",
  "masonry_testing",
  "masonry_winit",
  "profiling",
  "resvg",
  "smallvec",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]
