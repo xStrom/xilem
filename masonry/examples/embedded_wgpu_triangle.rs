@@ -30,10 +30,13 @@ use masonry::widgets::{Button, ButtonPress};
 use masonry_imaging::texture_render::{RenderTarget, Renderer as MasonryRenderer};
 use masonry_imaging::{Layer as ImagingLayer, PreparedFrame};
 use masonry_testing::ROBOTO;
-use wgpu::util::TextureBlitterBuilder;
 
-const WIDTH: u32 = 960;
-const HEIGHT: u32 = 540;
+const SCENE_WIDTH: u32 = 960;
+const SCENE_HEIGHT: u32 = 540;
+const UI_WIDTH: u32 = 200;
+const UI_HEIGHT: u32 = 40;
+const UI_X: u32 = 32;
+const UI_Y: u32 = 32;
 const SCALE_FACTOR: f64 = 1.0;
 const BUTTON_TAG: WidgetTag<Button> = WidgetTag::named("toggle-triangle-color");
 const PRIMARY_MOUSE: PointerInfo = PointerInfo {
@@ -73,6 +76,38 @@ fn fs_main() -> @location(0) vec4f {
 }
 "#;
 
+const UI_COMPOSITE_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) tex_coords: vec2<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var output: VertexOutput;
+
+    output.tex_coords = vec2<f32>(
+        f32((vertex_index << 1u) & 2u),
+        f32(vertex_index & 2u),
+    );
+    output.position = vec4<f32>(output.tex_coords * 2.0 - 1.0, 0.0, 1.0);
+    output.tex_coords.y = 1.0 - output.tex_coords.y;
+
+    return output;
+}
+
+@group(0) @binding(0)
+var ui_texture: texture_2d<f32>;
+
+@group(0) @binding(1)
+var ui_sampler: sampler;
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(ui_texture, ui_sampler, input.tex_coords);
+}
+"#;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output_dir = std::env::args()
         .nth(1)
@@ -80,7 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| PathBuf::from("target/example-output/embedded_wgpu_triangle"));
     std::fs::create_dir_all(&output_dir)?;
 
-    let mut example = EmbeddedTriangleExample::new(PhysicalSize::new(WIDTH, HEIGHT))?;
+    let mut example = EmbeddedTriangleExample::new(PhysicalSize::new(SCENE_WIDTH, SCENE_HEIGHT))?;
 
     let before_path = output_dir.join("before_click.png");
     example.render_to_png(&before_path)?;
@@ -100,36 +135,38 @@ struct EmbeddedTriangleExample {
     gpu: GpuState,
     scene_renderer: TriangleRenderer,
     masonry_renderer: MasonryRenderer,
-    ui_blitter: wgpu::util::TextureBlitter,
+    ui_compositor: UiCompositor,
     scene_target: OffscreenTexture,
     ui_target: OffscreenTexture,
     render_root: RenderRoot,
     host: HostState,
-    size: PhysicalSize<u32>,
+    scene_size: PhysicalSize<u32>,
+    ui_size: PhysicalSize<u32>,
+    ui_origin: PhysicalPosition<u32>,
 }
 
 impl EmbeddedTriangleExample {
-    fn new(size: PhysicalSize<u32>) -> Result<Self, Box<dyn Error>> {
+    fn new(scene_size: PhysicalSize<u32>) -> Result<Self, Box<dyn Error>> {
+        let ui_size = PhysicalSize::new(UI_WIDTH, UI_HEIGHT);
+        let ui_origin = PhysicalPosition::new(UI_X, UI_Y);
         let gpu = GpuState::new()?;
         let scene_renderer = TriangleRenderer::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
         let masonry_renderer = MasonryRenderer::new();
-        let ui_blitter = TextureBlitterBuilder::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm)
-            .blend_state(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
-            .build();
+        let ui_compositor = UiCompositor::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
         let scene_target = OffscreenTexture::new(
             &gpu.device,
-            size,
+            scene_size,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
         let ui_target = OffscreenTexture::new(
             &gpu.device,
-            size,
+            ui_size,
             wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::STORAGE_BINDING,
         );
-        let mut render_root = create_render_root(size);
+        let mut render_root = create_render_root(ui_size);
         let mut host = HostState::default();
         host.redraw_requested = true;
         process_host_signals(&mut render_root, &mut host);
@@ -138,12 +175,14 @@ impl EmbeddedTriangleExample {
             gpu,
             scene_renderer,
             masonry_renderer,
-            ui_blitter,
+            ui_compositor,
             scene_target,
             ui_target,
             render_root,
             host,
-            size,
+            scene_size,
+            ui_size,
+            ui_origin,
         })
     }
 
@@ -161,10 +200,13 @@ impl EmbeddedTriangleExample {
             &self.gpu.device,
             &self.gpu.queue,
             &self.scene_target.texture,
-            self.size,
+            self.scene_size,
         )?;
-        let image = image::RgbaImage::from_raw(self.size.width, self.size.height, pixels)
-            .ok_or_else(|| std::io::Error::other("failed to build RGBA image from GPU readback"))?;
+        let image =
+            image::RgbaImage::from_raw(self.scene_size.width, self.scene_size.height, pixels)
+                .ok_or_else(|| {
+                    std::io::Error::other("failed to build RGBA image from GPU readback")
+                })?;
         image.save(path)?;
         self.host.redraw_requested = false;
         Ok(())
@@ -210,8 +252,8 @@ impl EmbeddedTriangleExample {
             unreachable!("root_layer always returns a scene layer");
         };
         let frame = PreparedFrame::new(
-            self.size.width,
-            self.size.height,
+            self.ui_size.width,
+            self.ui_size.height,
             SCALE_FACTOR,
             Color::TRANSPARENT,
             root_scene,
@@ -233,19 +275,14 @@ impl EmbeddedTriangleExample {
     }
 
     fn composite_ui(&self) {
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("embedded_wgpu_triangle composite"),
-            });
-        self.ui_blitter.copy(
+        self.ui_compositor.composite(
             &self.gpu.device,
-            &mut encoder,
+            &self.gpu.queue,
             &self.ui_target.view,
             &self.scene_target.view,
+            self.ui_origin,
+            self.ui_size,
         );
-        self.gpu.queue.submit([encoder.finish()]);
     }
 }
 
@@ -468,6 +505,154 @@ impl TriangleRenderer {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        queue.submit([encoder.finish()]);
+    }
+}
+
+#[derive(Debug)]
+struct UiCompositor {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
+impl UiCompositor {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("embedded_wgpu_triangle ui bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("embedded_wgpu_triangle ui sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("embedded_wgpu_triangle ui pipeline layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            immediate_size: 0,
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("embedded_wgpu_triangle ui shader"),
+            source: wgpu::ShaderSource::Wgsl(UI_COMPOSITE_SHADER.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("embedded_wgpu_triangle ui pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+        }
+    }
+
+    fn composite(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source_view: &wgpu::TextureView,
+        target_view: &wgpu::TextureView,
+        origin: PhysicalPosition<u32>,
+        size: PhysicalSize<u32>,
+    ) {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("embedded_wgpu_triangle ui bind group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("embedded_wgpu_triangle composite"),
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("embedded_wgpu_triangle composite pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_viewport(
+            origin.x as f32,
+            origin.y as f32,
+            size.width as f32,
+            size.height as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(origin.x, origin.y, size.width, size.height);
+        pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
         queue.submit([encoder.finish()]);
