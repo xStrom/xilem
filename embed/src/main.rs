@@ -372,21 +372,7 @@ impl DemoScene {
     }
 
     fn clear_color(&self) -> wgpu::Color {
-        if self.palette_mix < 0.5 {
-            wgpu::Color {
-                r: 0.04,
-                g: 0.12,
-                b: 0.11,
-                a: 1.0,
-            }
-        } else {
-            wgpu::Color {
-                r: 0.05,
-                g: 0.07,
-                b: 0.15,
-                a: 1.0,
-            }
-        }
+        wgpu::Color::BLACK
     }
 
     fn render(
