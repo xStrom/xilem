@@ -12,7 +12,7 @@ use masonry::ui_events::pointer::{
     PointerButtonEvent, PointerEvent, PointerGestureEvent, PointerInfo, PointerScrollEvent,
     PointerUpdate,
 };
-use masonry::widgets::{Align, Button, ButtonPress};
+use masonry::widgets::{Button, ButtonPress};
 use masonry_core::app::{
     RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, WindowSizePolicy,
 };
@@ -29,8 +29,8 @@ use winit::{
     window::{Window, WindowAttributes, WindowId},
 };
 
-const UI_LOGICAL_WIDTH: f64 = 300.0;
-const UI_LOGICAL_HEIGHT: f64 = 100.0;
+const UI_LOGICAL_WIDTH: f64 = 150.0;
+const UI_LOGICAL_HEIGHT: f64 = 40.0;
 const UI_TRANSPARENT: Color = Color::from_rgba8(0, 0, 0, 0);
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 
@@ -602,9 +602,9 @@ impl EmbeddedUi {
         let physical_size = logical_size.to_physical(scale_factor);
         let signal_queue = Rc::new(RefCell::new(VecDeque::new()));
         let sink_queue = signal_queue.clone();
-        let button = Align::centered(Button::with_text("Rotate cube").prepare());
+        let button = Button::with_text("Rotate cube").prepare();
         let render_root = RenderRoot::new(
-            button.prepare(),
+            button,
             move |signal| {
                 sink_queue.borrow_mut().push_back(signal);
             },
