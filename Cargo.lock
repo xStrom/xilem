@@ -1129,7 +1129,11 @@ name = "embed"
 version = "0.0.0"
 dependencies = [
  "env_logger",
+ "masonry",
+ "masonry_core",
+ "masonry_imaging",
  "pollster",
+ "ui-events-winit",
  "wgpu",
  "winit",
 ]
