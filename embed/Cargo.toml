@@ -1,0 +1,15 @@
+[package]
+name = "embed"
+
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+publish = false
+
+[dependencies]
+env_logger = "0.11.0"
+pollster = "0.4.0"
+wgpu.workspace = true
+winit.workspace = true

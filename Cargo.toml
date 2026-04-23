@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "embed",
+
     "xilem",
     "xilem_core",
     "xilem_masonry",
