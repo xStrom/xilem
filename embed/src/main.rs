@@ -32,6 +32,7 @@ use winit::{
 const UI_LOGICAL_WIDTH: f64 = 300.0;
 const UI_LOGICAL_HEIGHT: f64 = 100.0;
 const UI_TRANSPARENT: Color = Color::from_rgba8(0, 0, 0, 0);
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 
 const UI_COMPOSITE_SHADER: &str = r#"
 struct QuadParams {
@@ -85,6 +86,119 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+const SCENE_SHADER: &str = r#"
+struct SceneParams {
+    angle: f32,
+    aspect: f32,
+    palette_mix: f32,
+    _padding: f32,
+}
+
+@group(0) @binding(0)
+var<uniform> scene: SceneParams;
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec3<f32>,
+}
+
+fn rotate_y(p: vec3<f32>, angle: f32) -> vec3<f32> {
+    let s = sin(angle);
+    let c = cos(angle);
+    return vec3<f32>(p.x * c + p.z * s, p.y, -p.x * s + p.z * c);
+}
+
+fn rotate_x(p: vec3<f32>, angle: f32) -> vec3<f32> {
+    let s = sin(angle);
+    let c = cos(angle);
+    return vec3<f32>(p.x, p.y * c - p.z * s, p.y * s + p.z * c);
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
+    let positions = array<vec3<f32>, 8>(
+        vec3<f32>(-1.0, -1.0,  1.0),
+        vec3<f32>( 1.0, -1.0,  1.0),
+        vec3<f32>( 1.0,  1.0,  1.0),
+        vec3<f32>(-1.0,  1.0,  1.0),
+        vec3<f32>(-1.0, -1.0, -1.0),
+        vec3<f32>( 1.0, -1.0, -1.0),
+        vec3<f32>( 1.0,  1.0, -1.0),
+        vec3<f32>(-1.0,  1.0, -1.0),
+    );
+
+    let indices = array<u32, 36>(
+        0u, 1u, 2u, 0u, 2u, 3u,
+        5u, 4u, 7u, 5u, 7u, 6u,
+        3u, 2u, 6u, 3u, 6u, 7u,
+        4u, 5u, 1u, 4u, 1u, 0u,
+        1u, 5u, 6u, 1u, 6u, 2u,
+        4u, 0u, 3u, 4u, 3u, 7u,
+    );
+
+    let normals = array<vec3<f32>, 6>(
+        vec3<f32>( 0.0,  0.0,  1.0),
+        vec3<f32>( 0.0,  0.0, -1.0),
+        vec3<f32>( 0.0,  1.0,  0.0),
+        vec3<f32>( 0.0, -1.0,  0.0),
+        vec3<f32>( 1.0,  0.0,  0.0),
+        vec3<f32>(-1.0,  0.0,  0.0),
+    );
+
+    let palette_a = array<vec3<f32>, 6>(
+        vec3<f32>(0.16, 0.87, 0.71),
+        vec3<f32>(0.08, 0.65, 0.55),
+        vec3<f32>(0.40, 0.95, 0.82),
+        vec3<f32>(0.12, 0.43, 0.36),
+        vec3<f32>(0.64, 0.99, 0.89),
+        vec3<f32>(0.21, 0.73, 0.61),
+    );
+
+    let palette_b = array<vec3<f32>, 6>(
+        vec3<f32>(0.34, 0.64, 0.98),
+        vec3<f32>(0.22, 0.47, 0.83),
+        vec3<f32>(0.74, 0.84, 1.00),
+        vec3<f32>(0.18, 0.25, 0.49),
+        vec3<f32>(0.99, 0.71, 0.34),
+        vec3<f32>(0.82, 0.44, 0.20),
+    );
+
+    let face = vertex_index / 6u;
+    var position = positions[indices[vertex_index]];
+    var normal = normals[face];
+
+    position = rotate_y(position, scene.angle);
+    position = rotate_x(position, scene.angle * 0.6);
+    normal = rotate_y(normal, scene.angle);
+    normal = rotate_x(normal, scene.angle * 0.6);
+
+    position.z = position.z + 4.5;
+
+    let perspective = 2.2 / position.z;
+    let ndc = vec2<f32>(
+        position.x * perspective / scene.aspect,
+        position.y * perspective,
+    );
+    let depth = clamp((position.z - 2.0) / 6.0, 0.0, 1.0);
+
+    let base_color =
+        palette_a[face] * (1.0 - scene.palette_mix) + palette_b[face] * scene.palette_mix;
+    let light_dir = normalize(vec3<f32>(0.35, 0.6, 1.0));
+    let lit = 0.28 + 0.72 * max(dot(normalize(normal), light_dir), 0.0);
+    let rim = 0.14 * max(1.0 - abs(normalize(normal).z), 0.0);
+
+    var out: VertexOut;
+    out.position = vec4<f32>(ndc, depth, 1.0);
+    out.color = base_color * (lit + rim);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color, 1.0);
+}
+"#;
+
 #[derive(Clone, Copy)]
 struct OverlayRect {
     origin: PhysicalPosition<f64>,
@@ -125,6 +239,198 @@ impl QuadParams {
             chunk.copy_from_slice(&value.to_ne_bytes());
         }
         bytes
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SceneParams {
+    angle: f32,
+    aspect: f32,
+    palette_mix: f32,
+    padding: f32,
+}
+
+impl SceneParams {
+    fn into_bytes(self) -> [u8; 16] {
+        let values = [self.angle, self.aspect, self.palette_mix, self.padding];
+        let mut bytes = [0; 16];
+        for (chunk, value) in bytes.chunks_exact_mut(4).zip(values) {
+            chunk.copy_from_slice(&value.to_ne_bytes());
+        }
+        bytes
+    }
+}
+
+struct DemoScene {
+    pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+    angle: f32,
+    palette_mix: f32,
+}
+
+impl DemoScene {
+    fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        size: PhysicalSize<u32>,
+    ) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("embed scene shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SCENE_SHADER)),
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("embed scene bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("embed scene pipeline layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("embed scene pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("embed scene uniform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("embed scene bind group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+        let (depth_texture, depth_view) = create_depth_target(device, size);
+
+        Self {
+            pipeline,
+            uniform_buffer,
+            bind_group,
+            depth_texture,
+            depth_view,
+            angle: 0.85,
+            palette_mix: 0.0,
+        }
+    }
+
+    fn resize(&mut self, device: &wgpu::Device, size: PhysicalSize<u32>) {
+        let (texture, view) = create_depth_target(device, size);
+        self.depth_texture = texture;
+        self.depth_view = view;
+    }
+
+    fn advance(&mut self) {
+        self.angle += std::f32::consts::PI / 7.0;
+        if self.angle > std::f32::consts::TAU {
+            self.angle -= std::f32::consts::TAU;
+        }
+        self.palette_mix = 1.0 - self.palette_mix;
+    }
+
+    fn clear_color(&self) -> wgpu::Color {
+        if self.palette_mix < 0.5 {
+            wgpu::Color {
+                r: 0.04,
+                g: 0.12,
+                b: 0.11,
+                a: 1.0,
+            }
+        } else {
+            wgpu::Color {
+                r: 0.05,
+                g: 0.07,
+                b: 0.15,
+                a: 1.0,
+            }
+        }
+    }
+
+    fn render(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        size: PhysicalSize<u32>,
+    ) {
+        let aspect = f32::max(size.width as f32 / size.height.max(1) as f32, 0.001);
+        let params = SceneParams {
+            angle: self.angle,
+            aspect,
+            palette_mix: self.palette_mix,
+            padding: 0.0,
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, &params.into_bytes());
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("embed scene pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(self.clear_color()),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..36, 0..1);
     }
 }
 
@@ -310,7 +616,7 @@ impl EmbeddedUi {
         let physical_size = logical_size.to_physical(scale_factor);
         let signal_queue = Rc::new(RefCell::new(VecDeque::new()));
         let sink_queue = signal_queue.clone();
-        let button = Align::centered(Button::with_text("Toggle scene color").prepare());
+        let button = Align::centered(Button::with_text("Rotate cube").prepare());
         let render_root = RenderRoot::new(
             button.prepare(),
             move |signal| {
@@ -504,13 +810,13 @@ impl EmbeddedUi {
             .expect("failed to render Masonry content");
     }
 
-    fn process_signals(&mut self, window: &Window, scene_alt: &mut bool) -> bool {
+    fn process_signals(&mut self, window: &Window, scene: &mut DemoScene) -> bool {
         let mut should_exit = false;
         while let Some(signal) = self.signal_queue.borrow_mut().pop_front() {
             match signal {
                 RenderRootSignal::Action(action, _) => {
                     if action.is::<ButtonPress>() {
-                        *scene_alt = !*scene_alt;
+                        scene.advance();
                         window.request_redraw();
                     }
                 }
@@ -565,9 +871,9 @@ struct State {
     scale_factor: f64,
     surface: wgpu::Surface<'static>,
     surface_format: wgpu::TextureFormat,
+    scene: DemoScene,
     ui: EmbeddedUi,
     compositor: UiCompositor,
-    scene_alt: bool,
 }
 
 impl State {
@@ -604,6 +910,7 @@ impl State {
             .first()
             .copied()
             .expect("surface should expose at least one format");
+        let scene = DemoScene::new(&device, surface_format.add_srgb_suffix(), size);
         let ui = EmbeddedUi::new(&device, scale_factor);
         let compositor = UiCompositor::new(&device, surface_format.add_srgb_suffix());
 
@@ -616,9 +923,9 @@ impl State {
             scale_factor,
             surface,
             surface_format,
+            scene,
             ui,
             compositor,
-            scene_alt: false,
         };
 
         if state.size.width > 0 && state.size.height > 0 {
@@ -650,6 +957,7 @@ impl State {
         self.size = new_size;
         if self.size.width > 0 && self.size.height > 0 {
             self.configure_surface();
+            self.scene.resize(&self.device, self.size);
         }
         self.window.request_redraw();
     }
@@ -657,13 +965,13 @@ impl State {
     fn update_scale_factor(&mut self, scale_factor: f64) -> bool {
         self.scale_factor = scale_factor;
         self.ui.update_scale_factor(scale_factor, &self.device);
-        self.ui.process_signals(&self.window, &mut self.scene_alt)
+        self.ui.process_signals(&self.window, &mut self.scene)
     }
 
     fn handle_window_event(&mut self, event: &WindowEvent) -> bool {
         let overlay = self.ui.overlay_rect(self.size);
         self.ui.handle_window_event(event, overlay);
-        self.ui.process_signals(&self.window, &mut self.scene_alt)
+        self.ui.process_signals(&self.window, &mut self.scene)
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -672,7 +980,7 @@ impl State {
         }
 
         self.ui.render(&self.adapter, &self.device, &self.queue);
-        let should_exit = self.ui.process_signals(&self.window, &mut self.scene_alt);
+        let should_exit = self.ui.process_signals(&self.window, &mut self.scene);
         if should_exit {
             return Ok(());
         }
@@ -690,24 +998,8 @@ impl State {
                 label: Some("embed frame encoder"),
             });
 
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("embed background pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(scene_color(self.scene_alt)),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        }
+        self.scene
+            .render(&self.queue, &mut encoder, &texture_view, self.size);
 
         self.compositor.composite(
             &self.device,
@@ -722,7 +1014,7 @@ impl State {
         self.queue.submit([encoder.finish()]);
         self.window.pre_present_notify();
         surface_texture.present();
-        let _ = self.ui.process_signals(&self.window, &mut self.scene_alt);
+        let _ = self.ui.process_signals(&self.window, &mut self.scene);
         Ok(())
     }
 }
@@ -740,7 +1032,7 @@ impl ApplicationHandler for App {
                 .expect("failed to create a window"),
         );
         let mut state = pollster::block_on(State::new(window.clone()));
-        let should_exit = state.ui.process_signals(&window, &mut state.scene_alt);
+        let should_exit = state.ui.process_signals(&window, &mut state.scene);
         self.state = Some(state);
         window.request_redraw();
         if should_exit {
@@ -819,22 +1111,26 @@ fn create_render_target(
     (texture, view)
 }
 
-fn scene_color(alternate: bool) -> wgpu::Color {
-    if alternate {
-        wgpu::Color {
-            r: 0.11,
-            g: 0.32,
-            b: 0.54,
-            a: 1.0,
-        }
-    } else {
-        wgpu::Color {
-            r: 0.08,
-            g: 0.55,
-            b: 0.18,
-            a: 1.0,
-        }
-    }
+fn create_depth_target(
+    device: &wgpu::Device,
+    size: PhysicalSize<u32>,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("embed depth texture"),
+        size: wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 fn pointer_info(event: &PointerEvent) -> Option<PointerInfo> {
