@@ -1,12 +1,12 @@
 # Pixel snapping and DPI scale handling plan
 
 This document describes a target design for pixel snapping, DPI scale handling, and
-presentation geometry in Masonry.
+visual geometry in Masonry.
 
-The core distinction is between **ideal geometry** and **presentation geometry**.
+The core distinction is between **ideal geometry** and **visual geometry**.
 Ideal geometry is fractional, logical, and stable across DPI changes. It is used
 for layout, transforms, text metrics, and semantic relationships such as baseline
-alignment. Presentation geometry is derived after compose, can be snapped to the
+alignment. Visual geometry is derived after compose, can be snapped to the
 physical pixel grid, and is used for visual boxes, hit testing, clips, bounds,
 accessibility geometry, and paint box APIs.
 
@@ -17,37 +17,37 @@ The system should uphold the following goals and invariants:
 - Widget-local coordinates are logical layout coordinates, not device pixels.
 - Public widget APIs and internal widget methods use the same logical coordinate
   model unless a method explicitly says otherwise.
-- Device pixel conversion happens inside Masonry at presentation/render/platform
+- Device pixel conversion happens inside Masonry at visual/render/platform
   boundaries.
 - Layout produces ideal fractional geometry and should not depend on DPI scale for
   normal widget sizing.
 - DPI changes should generally not cause layout changes or widget tree logic
   changes.
-- Pixel snapping uses the full effective window transform and DPI scale, not only
+- Pixel snapping uses the full window transform and DPI scale, not only
   the parent-local layout origin.
-- Box snapping happens after compose, once the widget's effective transform is
-  known.
-- Snapped box geometry is available before hit testing, accessibility coordinate
+- Visual box resolution happens after compose, once the widget's full transform
+  to the window is known.
+- Visual box geometry is available before hit testing, accessibility coordinate
   updates, IME coordinate updates, and paint.
-- Hit testing and paint should use the same presentation box geometry.
+- Hit testing and paint should use the same visual box geometry.
 - Widget outer border-box edges should be pixel aligned when snapping is enabled
-  and the effective transform allows it.
+  and the full transform allows it.
 - Sibling widget borders should remain gapless after snapping. For example, three
   equal children in a 100 device-pixel container may resolve to widths like 33,
   33, and 34 device pixels.
 - Snapping should be deterministic and should avoid accumulating local rounding
   errors through the tree.
-- Snapping is disabled for widgets whose effective transform is not axis-aligned,
+- Snapping is disabled for widgets whose full transform is not axis-aligned,
   such as transforms with rotation or shear.
 - Snapping can be disabled for widgets that opt into subpixel motion or transform
   animation.
-- Ideal geometry remains available even when presentation geometry is snapped.
+- Ideal geometry remains available even when visual geometry is snapped.
 - Box edge snapping and text baseline snapping are separate constraints.
 - Baseline alignment during layout is based on ideal baseline anchors.
-- Text baseline snapping uses ideal baseline coordinates, not snapped box edges.
+- Text baseline snapping uses ideal baseline coordinates, not visual box edges.
 - Multi-line text can snap each line baseline independently at paint time.
 - Widget paint methods continue to work in widget-local logical coordinates.
-- Paint box APIs should expose presentation geometry where that is useful for
+- Paint box APIs should expose visual geometry where that is useful for
   crisp edge-to-edge drawing.
 - Paint code that needs layout semantics, text metrics, or ideal placement can
   access ideal geometry explicitly.
@@ -60,7 +60,7 @@ The system should uphold the following goals and invariants:
   stable logical layout size.
 - Image painting should be able to use sharp high-DPI resources without upscaling
   low-DPI logical-sized images.
-- The per-widget storage cost should remain small. Store compact presentation
+- The per-widget storage cost should remain small. Store compact visual
   data and derive specialized snap values lazily when possible.
 
 ## Part 1: Restore Logical Widget Coordinates
@@ -86,81 +86,82 @@ The failed assumption in the current partial model is that widget-local pixels c
 be device pixels. Once arbitrary transforms are supported, a local unit can map to
 fractional, scaled, or otherwise transformed device coordinates. It is therefore
 more accurate to treat widget-local coordinates as logical layout coordinates and
-perform physical pixel conversion only when resolving presentation.
+perform physical pixel conversion only when resolving visual geometry.
 
 This also keeps layout stable across monitor DPI changes. A widget that asks for a
 100px logical size should not change its layout size just because the window moved
 from a 1.0x display to a 1.5x display. The visual representation may become
 sharper or use more physical pixels, but the ideal layout remains unchanged.
 
-## Part 2: Resolve Box Snapping After Compose
+## Part 2: Resolve Visual Boxes After Compose
 
-Box snapping should move out of layout and become a presentation-geometry step
-after compose has produced each widget's ideal effective transform.
+Visual box resolution should move out of layout and happen after compose has
+produced each widget's full transform to the window. The first implementation
+resolves visual boxes by pixel-snapping eligible layout boxes.
 
-- Stop snapping child `origin` and `end_point` in `place_child`.
+- Stop snapping child layout geometry in `place_child`.
 - Store layout origins and sizes as ideal fractional logical geometry.
 - Compute the ideal `window_transform` during compose as today, but without
   relying on pre-snapped layout points.
-- Add a post-compose presentation step, or an explicit phase at the end of compose,
-  that resolves snapped box geometry.
+- Add a post-compose visual step, or an explicit phase at the end of compose,
+  that resolves visual box geometry.
 - Convert ideal local box edges into device coordinates with the full
   local-to-window transform and window-to-device scale.
-- Snap the outer border-box edges in device space when the effective transform is
+- Snap the outer border-box edges in device space when the full transform is
   eligible.
 - Map the snapped device border-box back into widget-local logical coordinates as
-  presentation-local geometry.
-- Use the same snapped presentation boxes for paint box APIs, hit testing, clips,
+  visual geometry.
+- Use the same visual boxes for paint box APIs, hit testing, clips,
   bounds, accessibility geometry, and IME fallback geometry.
-- Disable box snapping for non-axis-aligned effective transforms.
+- Disable box snapping for non-axis-aligned full transforms.
 - Add a future opt-out for subpixel motion or transform animation.
-- Keep ideal geometry available alongside snapped presentation geometry.
-- Keep stored presentation data compact, preferably one primary snapped border-box
+- Keep ideal geometry available alongside visual geometry.
+- Keep stored visual data compact, preferably one primary visual border-box
   rect plus existing or derived bounding data.
 
-The presentation box is not a replacement for ideal layout geometry. It is the
-visual identity of the widget for systems that need to agree with paint. The ideal
+The visual box is not a replacement for ideal layout geometry. It is the
+box that paint, hit testing, and platform geometry need to agree on. The ideal
 geometry remains the source of truth for layout, transform composition, text
 metrics, and baseline relationships.
 
 A minimal storage shape should be enough for a first implementation. For example,
-`WidgetState` can keep ideal fields such as `origin`, `layout_border_box_size`,
+`WidgetState` can keep ideal fields such as `origin`, `border_box_size`,
 `border_box_insets`, `paint_insets`, and `window_transform`, and add compact
-presentation data such as a snapped `border_box_local` rect plus a window-space
-bounding box. Padding-box, content-box, paint-box, and specialized snapped values
-can usually be derived lazily from the snapped border-box, ideal insets, and the
+visual data such as a `visual_border_box` rect plus a window-space
+bounding box. Padding-box, content-box, paint-box, and specialized snap values
+can usually be derived lazily from the visual border-box, ideal insets, and the
 snap context.
 
-The snapped local rect is not obtained by reversing the rounding operation.
+The visual local rect is not obtained by reversing the rounding operation.
 Rounding in device space is lossy. Instead, Masonry chooses representative local
 logical coordinates that map to the snapped device edges under the ideal
-local-to-device transform. These coordinates are presentation geometry, not
+local-to-device transform. These coordinates are visual geometry, not
 recovered ideal layout geometry.
 
 ## Part 3: Snap Multi-Line Text Baselines From Ideal Geometry
 
 Text baseline snapping should use ideal baseline anchors, so visual baseline
-alignment survives box snapping.
+alignment survives visual box snapping.
 
 - Keep widget baseline metrics fractional and logical.
 - Keep parent baseline alignment, such as Flex first-baseline alignment, as an
   ideal layout relationship.
-- Do not derive snapped text baselines from the snapped box top edge.
+- Do not derive snapped text baselines from the visual box top edge.
 - Make text layout libraries such as Parley produce ideal fractional metrics.
-- Avoid asking text layout to quantize line positions before the final effective
-  transform is known.
+- Avoid asking text layout to quantize line positions before the final transform
+  to the window is known.
 - Provide a `SnapContext` that can map ideal local baseline coordinates into
-  device space, round them, and return presentation-local coordinates for paint.
+  device space, round them, and return visual coordinates for paint.
 - Snap each text line baseline independently during paint, caret positioning,
   selection painting, IME geometry, and text hit testing when those systems need
-  presentation-accurate text positions.
+  visual text positions.
 - Do not store every snapped line baseline in `WidgetState`.
 - Initially rely on mathematically equal ideal baselines snapping to the same
   device coordinate for compatible transforms.
 - Consider explicit baseline snap groups later if floating-point edge cases near
   half-pixel boundaries become observable.
 
-Baseline alignment and box snapping are separate constraints. During layout, a
+Baseline alignment and visual box snapping are separate constraints. During layout, a
 parent such as Flex can continue to place children so that:
 
 ```text
@@ -170,13 +171,13 @@ child_origin_y + child_first_baseline_y = common_baseline_y
 After compose, if the children have compatible axis-aligned transforms, each
 child's ideal first baseline maps to the same device coordinate. Snapping those
 ideal baselines independently therefore produces the same snapped visual baseline.
-The crucial rule is that baseline snapping ignores any presentation shift caused
-by box edge snapping.
+The crucial rule is that baseline snapping ignores any visual shift caused
+by box snapping.
 
 For multi-line text, only the widget's first and last baselines participate in
 external layout relationships, but every line has a visual baseline. Those line
-baselines should remain ideal fractional values until paint or another
-presentation-sensitive text operation runs. The snap context can then resolve each
+baselines should remain ideal fractional values until paint or another visual text
+operation runs. The snap context can then resolve each
 line baseline lazily without increasing per-widget state.
 
 ## Part 4: Add Snap-Aware Paint Helpers

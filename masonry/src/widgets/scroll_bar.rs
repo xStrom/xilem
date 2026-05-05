@@ -181,10 +181,11 @@ impl Widget for ScrollBar {
             PointerEvent::Down(PointerButtonEvent { state, .. }) => {
                 ctx.capture_pointer();
 
-                let size = ctx.content_box_size();
+                let content_box = ctx.content_box();
+                let size = content_box.size();
                 let cursor_min_length = theme::SCROLLBAR_MIN_SIZE;
                 let cursor_rect = self.cursor_rect(size, cursor_min_length);
-                let mouse_pos = ctx.local_position(state.position);
+                let mouse_pos = ctx.local_position(state.position) - content_box.origin().to_vec2();
                 let mut changed = false;
                 if cursor_rect.contains(mouse_pos) {
                     let (c0, c1) = cursor_rect.get_coords(self.axis);
@@ -204,13 +205,16 @@ impl Widget for ScrollBar {
                 if ctx.is_active()
                     && let Some(grab_anchor) = self.grab_anchor
                 {
-                    let size = ctx.content_box_size();
+                    let content_box = ctx.content_box();
+                    let size = content_box.size();
                     let cursor_min_length = theme::SCROLLBAR_MIN_SIZE;
+                    let mouse_pos =
+                        ctx.local_position(current.position) - content_box.origin().to_vec2();
                     let progress = self.progress_from_mouse_pos(
                         size,
                         cursor_min_length,
                         grab_anchor,
-                        ctx.local_position(current.position),
+                        mouse_pos,
                     );
                     if self.set_cursor_progress(progress) {
                         ctx.request_render();
@@ -373,10 +377,12 @@ impl Widget for ScrollBar {
         let cursor_padding = theme::SCROLLBAR_PAD;
         let cursor_min_length = theme::SCROLLBAR_MIN_SIZE;
 
-        let size = ctx.content_box_size();
+        let content_box = ctx.content_box();
+        let size = content_box.size();
         let (inset_x, inset_y) = self.axis.pack_xy(0.0, cursor_padding);
-        let cursor_rect = self
-            .cursor_rect(size, cursor_min_length)
+        let cursor_rect =
+            self.cursor_rect(size, cursor_min_length) + content_box.origin().to_vec2();
+        let cursor_rect = cursor_rect
             .inset((-inset_x, -inset_y))
             .to_rounded_rect(radius);
 

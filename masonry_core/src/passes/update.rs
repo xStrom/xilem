@@ -813,7 +813,7 @@ pub(crate) fn run_update_scroll_pass(root: &mut RenderRoot) {
             // Before continuing to the parent, we need to convert the target_rect from this
             // widget's border-box coordinate space to the parent's border-box coordinate space.
             let state = &ctx.widget_state;
-            target_rect = target_rect + state.origin.to_vec2();
+            target_rect = target_rect + state.layout_origin.to_vec2();
         });
     }
 }

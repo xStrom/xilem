@@ -5,7 +5,7 @@ use assert_matches::assert_matches;
 
 use crate::core::{NewWidget, Widget, WidgetTag};
 use crate::kurbo::{Insets, Point, Rect, Size};
-use crate::layout::{AsUnit, Length, SizeDef};
+use crate::layout::{AsUnit, Length};
 use crate::properties::{BorderWidth, Dimensions, Padding};
 use crate::testing::{ModularWidget, TestHarness, TestWidgetExt, assert_debug_panics};
 use crate::theme::test_property_set;
@@ -38,8 +38,8 @@ fn layout_simple() {
 
     let harness = TestHarness::create(test_property_set(), widget);
 
-    let first_box_size = harness.get_widget(tag_1).ctx().border_box_size();
-    let first_box_paint_rect = harness.get_widget(tag_1).ctx().paint_box();
+    let first_box_size = harness.get_widget(tag_1).ctx().layout_border_box().size();
+    let first_box_paint_rect = harness.get_widget(tag_1).ctx().layout_paint_box();
 
     assert_eq!(first_box_size.width, BOX_WIDTH);
     assert_eq!(first_box_size.height, BOX_WIDTH);
@@ -195,33 +195,6 @@ fn skip_layout_when_cached() {
 }
 
 #[test]
-fn pixel_snapping() {
-    let child_tag = WidgetTag::named("child");
-    let child = NewWidget::new(SizedBox::empty().size(10.3.px(), 10.3.px())).with_tag(child_tag);
-    let pos = Point::new(5.1, 5.3);
-    let parent = ModularWidget::new_parent(child).layout_fn(move |child, ctx, _, size| {
-        let child_size = ctx.compute_size(child, SizeDef::fit(size), size.into());
-        ctx.run_layout(child, child_size);
-        ctx.place_child(child, pos);
-        ctx.set_baselines(2.4, 2.6);
-    });
-    let parent_tag = WidgetTag::named("parent");
-    let parent = NewWidget::new(parent).with_tag(parent_tag);
-
-    let harness = TestHarness::create(test_property_set(), parent);
-
-    let child_pos = harness.get_widget(child_tag).ctx().window_origin();
-    let child_size = harness.get_widget(child_tag).ctx().border_box_size();
-    let first_baseline = harness.get_widget(parent_tag).ctx().first_baseline();
-    let last_baseline = harness.get_widget(parent_tag).ctx().last_baseline();
-
-    assert_eq!(child_pos, Point::new(5.0, 5.0));
-    assert_eq!(child_size, Size::new(10., 11.));
-    assert_eq!(first_baseline, 2.4);
-    assert_eq!(last_baseline, 2.6);
-}
-
-#[test]
 fn layout_insets() {
     const BOX_WIDTH: f64 = 50.;
 
@@ -244,8 +217,8 @@ fn layout_insets() {
 
     let harness = TestHarness::create(test_property_set(), root_widget);
 
-    let child_paint_rect = harness.get_widget(child_tag).ctx().paint_box();
-    let parent_paint_rect = harness.get_widget(parent_tag).ctx().paint_box();
+    let child_paint_rect = harness.get_widget(child_tag).ctx().layout_paint_box();
+    let parent_paint_rect = harness.get_widget(parent_tag).ctx().layout_paint_box();
     let parent_bounding_rect = harness.get_widget(parent_tag).ctx().bounding_box();
 
     // The child's paint box is affected by its paint insets
@@ -288,10 +261,10 @@ fn content_box() {
 
     let harness = TestHarness::create(test_property_set(), hero);
 
-    let border_box = harness.get_widget(tag).ctx().border_box();
-    let border_box_size = harness.get_widget(tag).ctx().border_box_size();
-    let content_box = harness.get_widget(tag).ctx().content_box();
-    let content_box_size = harness.get_widget(tag).ctx().content_box_size();
+    let border_box = harness.get_widget(tag).ctx().layout_border_box();
+    let border_box_size = border_box.size();
+    let content_box = harness.get_widget(tag).ctx().layout_content_box();
+    let content_box_size = content_box.size();
     let border_box_translation = harness.get_widget(tag).ctx().border_box_translation();
 
     let expected_border_box_size = Size::new(100., 100.);

@@ -1001,6 +1001,10 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
             self.editor.refresh_layout(fctx, lctx);
             self.editor.try_layout().unwrap()
         };
+
+        // Treat (0,0) as visual box origin to match historic behavior.
+        let text_transform = Affine::translate(ctx.content_box().origin().to_vec2());
+
         if ctx.is_focus_target() {
             let (caret_color, selection_color) = {
                 let cache = ctx.property_cache();
@@ -1011,14 +1015,20 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
             };
             for (rect, _) in self.editor.selection_geometry().iter() {
                 let rect = bounding_box_to_rect(*rect);
-                painter.fill(rect, selection_color).draw();
+                painter
+                    .fill(rect, selection_color)
+                    .transform(text_transform)
+                    .draw();
             }
             if let Some(cursor) = self.editor.cursor_geometry(1.5)
                 && self.anim_cursor_visible
                 && ctx.is_window_focused()
             {
                 let rect = bounding_box_to_rect(cursor);
-                painter.fill(rect, caret_color).draw();
+                painter
+                    .fill(rect, caret_color)
+                    .transform(text_transform)
+                    .draw();
             };
         }
 
@@ -1027,7 +1037,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
 
         render_text(
             painter,
-            Affine::IDENTITY,
+            text_transform,
             layout,
             &[text_color.color.into()],
             self.hint,

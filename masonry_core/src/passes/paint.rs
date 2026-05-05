@@ -224,7 +224,10 @@ fn paint_widget(
 
             // Draw the widget's explicit baselines
             let mut draw_baseline = |baseline| {
-                let line = Line::new((0., baseline), (state.end_point.x, baseline));
+                let line = Line::new(
+                    (state.visual_border_box.x0, baseline),
+                    (state.visual_border_box.x1, baseline),
+                );
                 let baseline_style = Stroke::new(1.0).with_dashes(0., [4.0, 4.0]);
                 painter
                     .stroke(line, &baseline_style, color)
@@ -256,7 +259,7 @@ fn paint_widget(
 
         if global_state.inspector_state.hovered_widget == Some(id) {
             const HOVER_FILL_COLOR: Color = Color::from_rgba8(60, 60, 250, 100);
-            let rect = state.border_box_size().to_rect();
+            let rect = state.visual_border_box;
             Painter::new(layer_collector.scene_mut())
                 .fill(rect, HOVER_FILL_COLOR)
                 .transform(border_box_to_layer_transform)
@@ -265,7 +268,7 @@ fn paint_widget(
     }
 
     if paint_as_external {
-        layer_collector.push_external_layer(id, state.border_box_size().to_rect());
+        layer_collector.push_external_layer(id, state.visual_border_box);
     }
 
     if matches!(

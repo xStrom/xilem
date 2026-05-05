@@ -15,7 +15,7 @@ use crate::core::{
     WidgetId, WidgetMut, WidgetPod,
 };
 use crate::imaging::Painter;
-use crate::kurbo::{Axis, Cap, Join, Line, Size, Stroke};
+use crate::kurbo::{Affine, Axis, Cap, Join, Line, Size, Stroke};
 use crate::layout::LenReq;
 use crate::layout::{LayoutSize, Length, SizeDef, UnitPoint};
 use crate::properties::ContentColor;
@@ -737,11 +737,16 @@ impl Widget for Divider {
         painter: &mut Painter<'_>,
     ) {
         // TODO: Replace with snap-aware paint helper once that exists.
-        let one_dp = 1. / ctx.get_scale_factor();
+        let one_dp = 1. / ctx.scale_factor();
 
         let cache = ctx.property_cache();
         let color = props.get::<ContentColor>(cache);
         let thickness = self.thickness.map(|t| t.get()).unwrap_or(one_dp);
+
+        // Treat (0,0) as visual box origin to match historic behavior.
+        // Eventually we'll want to do proper alignment in paint here,
+        // instead of depending on layout only calculations.
+        let paint_transform = Affine::translate(ctx.content_box().origin().to_vec2());
 
         for line in &self.lines {
             let style = Stroke {
@@ -752,7 +757,10 @@ impl Widget for Divider {
                 end_cap: self.end_cap,
                 ..Default::default()
             };
-            painter.stroke(line.line, &style, color.color).draw();
+            painter
+                .stroke(line.line, &style, color.color)
+                .transform(paint_transform)
+                .draw();
         }
     }
 

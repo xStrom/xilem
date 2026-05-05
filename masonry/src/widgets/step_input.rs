@@ -1106,9 +1106,9 @@ impl<T: Steppable> Widget for StepInput<T> {
             PointerEvent::Move(pu) => {
                 // If we're hovered, highlight the correct side's button.
                 if ctx.is_hovered() {
-                    let size = ctx.content_box_size();
+                    let content_box_center_x = ctx.content_box().center().x;
                     let local_x = ctx.local_position(pu.current.position).x;
-                    let hover_backward = local_x <= size.width * 0.5;
+                    let hover_backward = local_x <= content_box_center_x;
                     if hover_backward != self.hover_backward {
                         self.hover_backward = hover_backward;
                         ctx.request_paint_only();
@@ -1214,7 +1214,7 @@ impl<T: Steppable> Widget for StepInput<T> {
                 // * The button was previously pressed down on us (active)
                 // * The pointer is still on us (hovered)
                 if self.slide_last.is_none() && ctx.is_active() && ctx.is_hovered() {
-                    let size = ctx.content_box_size();
+                    let content_box_center_x = ctx.content_box().center().x;
                     let local_x = ctx.local_position(pbe.state.position).x;
 
                     // Snap based on modifier
@@ -1225,7 +1225,7 @@ impl<T: Steppable> Widget for StepInput<T> {
                     };
 
                     // Update the active value based on which side was clicked
-                    let value_changed = if local_x <= size.width * 0.5 {
+                    let value_changed = if local_x <= content_box_center_x {
                         if snap {
                             self.prev_snap()
                         } else {
@@ -1531,7 +1531,9 @@ impl<T: Steppable> StepInput<T> {
         let color_backward = *props.get::<BackwardColor>(cache);
         let color_forward = *props.get::<ForwardColor>(cache);
 
-        let size = ctx.content_box_size();
+        let content_box = ctx.content_box();
+        let content_transform = Affine::translate(content_box.origin().to_vec2());
+        let size = content_box.size();
         let (_, forward, backward) = self.visual_speed();
 
         let (btn_length, btn_edge_pad) = Self::basic_button_length(size.height, Some(size.width));
@@ -1586,9 +1588,18 @@ impl<T: Steppable> StepInput<T> {
             end_cap: Cap::Butt,
             ..Default::default()
         };
-        painter.stroke(minus, &style, *minus_color).draw();
-        painter.stroke(plus_h, &style, *plus_color).draw();
-        painter.stroke(plus_v, &style, *plus_color).draw();
+        painter
+            .stroke(minus, &style, *minus_color)
+            .transform(content_transform)
+            .draw();
+        painter
+            .stroke(plus_h, &style, *plus_color)
+            .transform(content_transform)
+            .draw();
+        painter
+            .stroke(plus_v, &style, *plus_color)
+            .transform(content_transform)
+            .draw();
     }
 
     // Paint controls in the flow style.
@@ -1604,7 +1615,9 @@ impl<T: Steppable> StepInput<T> {
         let color_forward = *props.get::<ForwardColor>(cache);
         let color_heat = *props.get::<HeatColor>(cache);
 
-        let size = ctx.content_box_size();
+        let content_box = ctx.content_box();
+        let visual_to_layout = content_box.origin().to_vec2();
+        let size = content_box.size();
         let (speed, forward, backward) = self.visual_speed();
         let sliding = forward || backward;
 
@@ -1632,7 +1645,11 @@ impl<T: Steppable> StepInput<T> {
         // i.e. [AWW] -> [WWA] where A is the arrow and W is empty sapce of the same width.
         let arrow_move_range = 3.;
         // Actual available space for arrow movement depends on the label and our total size.
-        let label_width = self.label_x_end - self.label_x_start;
+        // The cached label positions are in layout content-box coordinates, while we're using
+        // visual content-box coordinates before applying `visual_to_layout`.
+        let label_x_start = self.label_x_start - visual_to_layout.x;
+        let label_x_end = self.label_x_end - visual_to_layout.x;
+        let label_width = label_x_end - label_x_start;
         let arrow_space = ((size.width - label_width) * 0.5 - arrow_edge_pad).max(0.);
         // Base offset is the stationary arrow location,
         // measured from the outer edge of the widget's content-box.
@@ -1689,14 +1706,14 @@ impl<T: Steppable> StepInput<T> {
             // End the outer lines exactly underneath the arrow shoulder tip.
             let style1_x_end = size.width - arrow_offset_active + arrow_width * 0.11;
             // Keep the outer line length at 80% of the inner lines.
-            let style1_x_start = self.label_x_end + (style1_x_end - self.label_x_end) * 0.2;
+            let style1_x_start = label_x_end + (style1_x_end - label_x_end) * 0.2;
             // Keep the outer line just barely following the arrow at the outer edge.
             let style1_y_offset = style1.width * 0.5 + arrow_height * 0.05;
 
             // End the inner lines underneath the arrow base.
             let style2_x_end = size.width - arrow_offset_active + arrow_base_x;
             // Start from the content.
-            let style2_x_start = self.label_x_end;
+            let style2_x_start = label_x_end;
             // Keep the inner lines following the base of the arrow, with a slight center gap.
             let style2_y_offset = style2.width * 0.5 + arrow_height * 0.06;
 
@@ -1761,10 +1778,11 @@ impl<T: Steppable> StepInput<T> {
             // The backwards lines need to be reflected and shifted to the other side.
             let lines_affine = if backward {
                 Affine::reflect((0., 0.), (0., 1.))
-                    .then_translate((self.label_x_end + self.label_x_start, 0.).into())
+                    .then_translate((label_x_end + label_x_start, 0.).into())
             } else {
                 Affine::IDENTITY
-            };
+            }
+            .then_translate(visual_to_layout);
 
             // Actually paint the lines.
             painter
@@ -1791,7 +1809,7 @@ impl<T: Steppable> StepInput<T> {
             let gradient = gradient.as_ref().unwrap();
             painter
                 .fill(&arrow, gradient)
-                .transform(arrow_affine_backward)
+                .transform(arrow_affine_backward.then_translate(visual_to_layout))
                 .draw();
         } else {
             // Otherwise with a solid color, potentially showing hover status if not sliding.
@@ -1802,7 +1820,7 @@ impl<T: Steppable> StepInput<T> {
             };
             painter
                 .fill(&arrow, *color)
-                .transform(arrow_affine_backward)
+                .transform(arrow_affine_backward.then_translate(visual_to_layout))
                 .draw();
         }
 
@@ -1812,7 +1830,7 @@ impl<T: Steppable> StepInput<T> {
             let gradient = gradient.as_ref().unwrap();
             painter
                 .fill(&arrow, gradient)
-                .transform(arrow_affine_forward)
+                .transform(arrow_affine_forward.then_translate(visual_to_layout))
                 .draw();
         } else {
             // Otherwise with a solid color, potentially showing hover status if not sliding.
@@ -1823,7 +1841,7 @@ impl<T: Steppable> StepInput<T> {
             };
             painter
                 .fill(&arrow, *color)
-                .transform(arrow_affine_forward)
+                .transform(arrow_affine_forward.then_translate(visual_to_layout))
                 .draw();
         }
     }

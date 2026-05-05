@@ -604,9 +604,12 @@ impl Widget for Label {
 
         let layout = &self.layouts[self.active_layout];
 
+        // Treat (0,0) as visual box origin to match historic behavior.
+        let text_transform = Affine::translate(ctx.content_box().origin().to_vec2());
+
         render_text(
             painter,
-            Affine::IDENTITY,
+            text_transform,
             &layout.layout,
             &[text_color.color.into()],
             self.hint,

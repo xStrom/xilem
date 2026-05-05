@@ -293,11 +293,17 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
     }
 
     fn paint_focus_bar(&mut self, ctx: &mut PaintCtx<'_>, scene: &mut Painter<'_>) {
-        let length = ctx.content_box_size().get_coord(self.split_axis);
+        let content_box = ctx.content_box();
+        let length = content_box.size().get_coord(self.split_axis);
+        let content_start = content_box.get_coords(self.split_axis).0;
         let (edge1, edge2) = self.bar_edges(length);
 
         let mut rect = ctx.border_box();
-        rect.set_coords(self.split_axis, edge1, edge2);
+        rect.set_coords(
+            self.split_axis,
+            content_start + edge1,
+            content_start + edge2,
+        );
         let rect = rect.inset(2.0);
 
         let focus_color = theme::FOCUS_COLOR.with_alpha(if ctx.is_active() { 1.0 } else { 0.5 });
@@ -307,17 +313,25 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
     }
 
     fn paint_solid_bar(&mut self, ctx: &mut PaintCtx<'_>, scene: &mut Painter<'_>, color: Color) {
-        let length = ctx.content_box_size().get_coord(self.split_axis);
+        let content_box = ctx.content_box();
+        let length = content_box.size().get_coord(self.split_axis);
+        let content_start = content_box.get_coords(self.split_axis).0;
         let (edge1, edge2) = self.bar_edges(length);
 
         let mut rect = ctx.border_box();
-        rect.set_coords(self.split_axis, edge1, edge2);
+        rect.set_coords(
+            self.split_axis,
+            content_start + edge1,
+            content_start + edge2,
+        );
 
         scene.fill(rect, color).draw();
     }
 
     fn paint_stroked_bar(&mut self, ctx: &mut PaintCtx<'_>, scene: &mut Painter<'_>, color: Color) {
-        let length = ctx.content_box_size().get_coord(self.split_axis);
+        let content_box = ctx.content_box();
+        let length = content_box.size().get_coord(self.split_axis);
+        let content_start = content_box.get_coords(self.split_axis).0;
         // Set the line width to a third of the splitter bar thickness,
         // because we'll paint two equal lines at the edges.
         let line_width = self.bar_thickness.get() / 3.0;
@@ -330,11 +344,19 @@ impl<ChildA: Widget + ?Sized, ChildB: Widget + ?Sized> Split<ChildA, ChildB> {
         let border_box = ctx.border_box();
         let (cross1, cross2) = border_box.get_coords(self.split_axis.cross());
 
-        let line1_p1 = self.split_axis.pack_point(edge1_line_pos, cross1);
-        let line1_p2 = self.split_axis.pack_point(edge1_line_pos, cross2);
+        let line1_p1 = self
+            .split_axis
+            .pack_point(content_start + edge1_line_pos, cross1);
+        let line1_p2 = self
+            .split_axis
+            .pack_point(content_start + edge1_line_pos, cross2);
 
-        let line2_p1 = self.split_axis.pack_point(edge2_line_pos, cross1);
-        let line2_p2 = self.split_axis.pack_point(edge2_line_pos, cross2);
+        let line2_p1 = self
+            .split_axis
+            .pack_point(content_start + edge2_line_pos, cross1);
+        let line2_p2 = self
+            .split_axis
+            .pack_point(content_start + edge2_line_pos, cross2);
 
         let (line1, line2) = (Line::new(line1_p1, line1_p2), Line::new(line2_p1, line2_p2));
 
@@ -459,10 +481,13 @@ where
         if self.draggable {
             match event {
                 PointerEvent::Down(PointerButtonEvent { state, .. }) => {
+                    let content_box = ctx.content_box();
+                    let content_start = content_box.get_coords(self.split_axis).0;
                     let pos = ctx
                         .local_position(state.position)
-                        .get_coord(self.split_axis);
-                    let length = ctx.content_box_size().get_coord(self.split_axis);
+                        .get_coord(self.split_axis)
+                        - content_start;
+                    let length = content_box.size().get_coord(self.split_axis);
                     if self.bar_area_hit_test(length, pos) {
                         ctx.set_handled();
                         ctx.capture_pointer();
@@ -472,10 +497,13 @@ where
                     }
                 }
                 PointerEvent::Move(PointerUpdate { current, .. }) if ctx.is_active() => {
+                    let content_box = ctx.content_box();
+                    let content_start = content_box.get_coords(self.split_axis).0;
                     let pos = ctx
                         .local_position(current.position)
-                        .get_coord(self.split_axis);
-                    let length = ctx.content_box_size().get_coord(self.split_axis);
+                        .get_coord(self.split_axis)
+                        - content_start;
+                    let length = content_box.size().get_coord(self.split_axis);
                     // If widget has pointer capture, assume always it's hovered
                     let effective_center = pos - self.click_offset;
                     self.update_split_point_from_bar_center(length, effective_center);
@@ -506,7 +534,7 @@ where
             return;
         }
 
-        let length = ctx.content_box_size().get_coord(self.split_axis);
+        let length = ctx.layout_content_box().size().get_coord(self.split_axis);
         let bar_thickness = self.bar_thickness.get();
         let split_space = (length - bar_thickness).max(0.0);
         if split_space <= f64::EPSILON {
@@ -558,7 +586,7 @@ where
             return;
         }
 
-        let length = ctx.content_box_size().get_coord(self.split_axis);
+        let length = ctx.layout_content_box().size().get_coord(self.split_axis);
         let bar_thickness = self.bar_thickness.get();
         let split_space = (length - bar_thickness).max(0.0);
         if split_space <= f64::EPSILON {
@@ -716,8 +744,10 @@ where
     }
 
     fn get_cursor(&self, ctx: &QueryCtx<'_>, pos: Point) -> CursorIcon {
-        let length = ctx.content_box_size().get_coord(self.split_axis);
-        let local_pos = ctx.to_local(pos).get_coord(self.split_axis);
+        let content_box = ctx.content_box();
+        let content_start = content_box.get_coords(self.split_axis).0;
+        let length = content_box.size().get_coord(self.split_axis);
+        let local_pos = ctx.to_local(pos).get_coord(self.split_axis) - content_start;
         let is_bar_area_hovered = self.bar_area_hit_test(length, local_pos);
 
         if self.draggable && (ctx.is_active() || is_bar_area_hovered) {
@@ -740,7 +770,7 @@ where
         _props: &PropertiesRef<'_>,
         node: &mut Node,
     ) {
-        let length = ctx.content_box_size().get_coord(self.split_axis);
+        let length = ctx.layout_content_box().size().get_coord(self.split_axis);
         let bar_thickness = self.bar_thickness.get();
         let split_space = (length - bar_thickness).max(0.0);
         let (min_limit, max_limit) = self.split_side_limits(split_space);
@@ -857,7 +887,7 @@ mod tests {
 
         let child1_initial_width = {
             let root = harness.root_widget();
-            root.children()[0].ctx().border_box_size().width
+            root.children()[0].ctx().layout_border_box().size().width
         };
 
         // Initial bar center with default settings:
@@ -871,8 +901,8 @@ mod tests {
             let root = harness.root_widget();
             let children = root.children();
             (
-                children[0].ctx().border_box_size().width,
-                children[1].ctx().border_box_size().width,
+                children[0].ctx().layout_border_box().size().width,
+                children[1].ctx().layout_border_box().size().width,
             )
         };
 
@@ -893,14 +923,14 @@ mod tests {
 
         let child1_initial_width = {
             let root = harness.root_widget();
-            root.children()[0].ctx().border_box_size().width
+            root.children()[0].ctx().layout_border_box().size().width
         };
 
         harness.process_text_event(TextEvent::key_down(Key::Named(NamedKey::ArrowRight)));
 
         let child1_width = {
             let root = harness.root_widget();
-            root.children()[0].ctx().border_box_size().width
+            root.children()[0].ctx().layout_border_box().size().width
         };
 
         assert!(child1_width > child1_initial_width);
@@ -916,14 +946,14 @@ mod tests {
 
         let child1_width = {
             let root = harness.root_widget();
-            root.children()[0].ctx().border_box_size().width
+            root.children()[0].ctx().layout_border_box().size().width
         };
         assert!((child1_width - 50.0).abs() < 0.01);
 
         harness.process_window_event(WindowEvent::Resize(PhysicalSize::new(300, 100)));
         let child1_width = {
             let root = harness.root_widget();
-            root.children()[0].ctx().border_box_size().width
+            root.children()[0].ctx().layout_border_box().size().width
         };
         assert!((child1_width - 50.0).abs() < 0.01);
     }
@@ -938,14 +968,14 @@ mod tests {
 
         let child2_width = {
             let root = harness.root_widget();
-            root.children()[1].ctx().border_box_size().width
+            root.children()[1].ctx().layout_border_box().size().width
         };
         assert!((child2_width - 50.0).abs() < 0.01);
 
         harness.process_window_event(WindowEvent::Resize(PhysicalSize::new(300, 100)));
         let child2_width = {
             let root = harness.root_widget();
-            root.children()[1].ctx().border_box_size().width
+            root.children()[1].ctx().layout_border_box().size().width
         };
         assert!((child2_width - 50.0).abs() < 0.01);
     }
@@ -965,7 +995,7 @@ mod tests {
         });
         let child1_width = {
             let root = harness.root_widget();
-            root.children()[0].ctx().border_box_size().width
+            root.children()[0].ctx().layout_border_box().size().width
         };
         assert!((child1_width - 144.0).abs() < 0.01);
 
@@ -974,7 +1004,7 @@ mod tests {
         });
         let child1_width = {
             let root = harness.root_widget();
-            root.children()[0].ctx().border_box_size().width
+            root.children()[0].ctx().layout_border_box().size().width
         };
         assert!((child1_width - 0.0).abs() < 0.01);
     }

@@ -172,11 +172,12 @@ impl Widget for Slider {
                 ctx.request_focus();
                 ctx.capture_pointer();
                 let local_pos = ctx.local_position(state.position);
-                let width = ctx.content_box_size().width;
+                let content_box = ctx.content_box();
+                let width = content_box.width();
                 let is_focused = ctx.is_focus_target();
                 let cache = ctx.property_cache();
                 if self.update_value_from_position(
-                    local_pos.x,
+                    local_pos.x - content_box.x0,
                     width,
                     *props.get(cache),
                     is_focused,
@@ -186,11 +187,12 @@ impl Widget for Slider {
             }
             PointerEvent::Move(PointerUpdate { current, .. }) if ctx.is_active() => {
                 let local_pos = ctx.local_position(current.position);
-                let width = ctx.content_box_size().width;
+                let content_box = ctx.content_box();
+                let width = content_box.width();
                 let is_focused = ctx.is_focus_target();
                 let cache = ctx.property_cache();
                 if self.update_value_from_position(
-                    local_pos.x,
+                    local_pos.x - content_box.x0,
                     width,
                     *props.get(cache),
                     is_focused,
@@ -381,7 +383,8 @@ impl Widget for Slider {
         let thumb_border_width = 2.0;
 
         // Calculate geometry based on state
-        let size = ctx.content_box_size();
+        let content_box = ctx.content_box();
+        let size = content_box.size();
         let thumb_radius = if ctx.is_active() {
             base_thumb_radius + 2.0
         } else if ctx.is_hovered() || ctx.is_focus_target() {
@@ -389,9 +392,9 @@ impl Widget for Slider {
         } else {
             base_thumb_radius
         };
-        let track_start_x = thumb_radius;
+        let track_start_x = content_box.x0 + thumb_radius;
         let track_width = (size.width - thumb_radius * 2.0).max(0.0);
-        let track_y = (size.height - track_thickness) / 2.0;
+        let track_y = content_box.y0 + (size.height - track_thickness) / 2.0;
         let border_box = ctx.border_box();
 
         // Push semitransparent layer if disabled
@@ -439,7 +442,7 @@ impl Widget for Slider {
 
         // Paint thumb
         let thumb_x = track_start_x + active_track_width;
-        let thumb_y = size.height / 2.0;
+        let thumb_y = content_box.y0 + size.height / 2.0;
         let thumb_circle = Circle::new(Point::new(thumb_x, thumb_y), thumb_radius);
 
         painter.fill(thumb_circle, thumb_color).draw();
