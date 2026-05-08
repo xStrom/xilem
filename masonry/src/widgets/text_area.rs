@@ -938,7 +938,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
 
         let (fctx, lctx) = ctx.text_contexts();
         let layout = self.editor.layout(fctx, lctx);
-        let text_width = max_advance.unwrap_or(layout.full_width());
+        let text_width = layout.full_width().max(max_advance.unwrap_or_default());
         let text_size = Size::new(text_width.into(), layout.height().into());
 
         let length = text_size.get_coord(axis);
