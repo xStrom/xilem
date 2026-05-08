@@ -11,13 +11,14 @@ use tracing::{Span, trace_span};
 
 use crate::core::{
     AccessCtx, ArcStr, BrushIndex, ChildrenIds, LayoutCtx, MeasureCtx, NoAction, PaintCtx,
-    PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty, StyleSet, Update, UpdateCtx,
-    UsesProperty, Widget, WidgetId, WidgetMut, render_text, set_accesskit_brush_properties,
+    PropertiesMut, PropertiesRef, Property, RegisterCtx, StyleProperty, StyleSet, Update,
+    UpdateCtx, UsesProperty, Widget, WidgetId, WidgetMut, render_text,
+    set_accesskit_brush_properties,
 };
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Size};
 use crate::layout::LenReq;
-use crate::parley::{FontContext, Layout, LayoutAccessibility, LayoutContext};
+use crate::parley::{FontContext, Layout, LayoutAccessibility, LayoutContext, TextWrapMode};
 use crate::properties::{ContentColor, LineBreaking};
 use crate::theme::default_text_styles;
 use crate::util::debug_panic;
@@ -110,9 +111,10 @@ impl TextLayout {
         self.alignment = alignment;
         self.alignment_width = alignment_width;
         self.layout.align(
-            Some(self.alignment_width),
             self.alignment,
-            TextAlignOptions::default(),
+            TextAlignOptions {
+                align_when_overflowing: true,
+            },
         );
     }
 
@@ -378,6 +380,7 @@ impl Label {
         &mut self,
         font_ctx: &mut FontContext,
         layout_ctx: &mut LayoutContext<BrushIndex>,
+        text_wrap_mode: TextWrapMode,
         max_advance: Option<f32>,
     ) -> usize {
         let timestamp = self.cache_time();
@@ -417,6 +420,7 @@ impl Label {
         for prop in self.styles.inner().values() {
             builder.push_default(prop.to_owned());
         }
+        builder.push_default(StyleProperty::TextWrapMode(text_wrap_mode));
         builder.build_into(&mut layout.layout, &self.text);
 
         layout.layout.break_all_lines(max_advance);
@@ -476,8 +480,11 @@ impl Widget for Label {
     fn register_children(&mut self, _ctx: &mut RegisterCtx<'_>) {}
 
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
-        LineBreaking::prop_changed(ctx, property_type);
         ContentColor::prop_changed(ctx, property_type);
+        if LineBreaking::matches(property_type) {
+            self.clear_cache();
+            ctx.request_layout();
+        }
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
@@ -508,40 +515,39 @@ impl Widget for Label {
         let cache = ctx.property_cache();
         let line_break_mode = props.get::<LineBreaking>(cache);
 
+        let text_wrap_mode = match line_break_mode {
+            LineBreaking::WordWrap => TextWrapMode::Wrap,
+            LineBreaking::Clip | LineBreaking::Overflow => TextWrapMode::NoWrap,
+        };
+
         // Calculate the max advance for the inline axis, with None indicating unbounded.
-        let max_advance = match line_break_mode {
-            LineBreaking::WordWrap => {
-                if axis == inline {
-                    // Inline axis measurement ignores cross_length as a performance optimization.
-                    // The search complexity of dealing with it is just too prohibitive.
-                    // This is a common optimization also present on the web.
-                    match len_req {
-                        // Zero space will get us the length of longest unbreakable word
-                        LenReq::MinContent => Some(0.),
-                        // Unbounded space will get us the length of the unwrapped string
-                        LenReq::MaxContent => None,
-                        // Attempt to wrap according to the parent's request
-                        LenReq::FitContent(space) => Some(space),
-                    }
-                } else {
-                    // Block axis is dependent on the inline axis, so cross_length dominates.
-                    // If there is no explicit cross_length present, we fall back to inline defaults.
-                    match len_req {
-                        // Fallback is inline axis MinContent
-                        LenReq::MinContent => cross_length.or(Some(0.)),
-                        // Fallback is inline axis MaxContent, even for FitContent, because
-                        // as we don't have the inline space bound we'll consider it unbounded.
-                        LenReq::MaxContent | LenReq::FitContent(_) => cross_length,
-                    }
-                }
+        let max_advance = if axis == inline {
+            // Inline axis measurement ignores cross_length as a performance optimization.
+            // The search complexity of dealing with it is just too prohibitive.
+            // This is a common optimization also present on the web.
+            match len_req {
+                // Zero space will get us the length of longest unbreakable word
+                LenReq::MinContent => Some(0.),
+                // Unbounded space will get us the length of the unwrapped string
+                LenReq::MaxContent => None,
+                // Attempt to wrap according to the parent's request
+                LenReq::FitContent(space) => Some(space),
             }
-            // If we're never wrapping, then there's no max advance.
-            LineBreaking::Clip | LineBreaking::Overflow => None,
+        } else {
+            // Block axis is dependent on the inline axis, so cross_length dominates.
+            // If there is no explicit cross_length present, we fall back to inline defaults.
+            match len_req {
+                // Fallback is inline axis MinContent
+                LenReq::MinContent => cross_length.or(Some(0.)),
+                // Fallback is inline axis MaxContent, even for FitContent, because
+                // as we don't have the inline space bound we'll consider it unbounded.
+                LenReq::MaxContent | LenReq::FitContent(_) => cross_length,
+            }
         }
         .map(|v| v as f32);
 
         let (font_ctx, layout_ctx) = ctx.text_contexts();
-        let layout_idx = self.build_and_break(font_ctx, layout_ctx, max_advance);
+        let layout_idx = self.build_and_break(font_ctx, layout_ctx, text_wrap_mode, max_advance);
         let layout = &self.layouts[layout_idx];
 
         let length = if axis == inline {
@@ -561,15 +567,17 @@ impl Widget for Label {
         let cache = ctx.property_cache();
         let line_break_mode = props.get::<LineBreaking>(cache);
 
-        let inline_space = size.get_coord(inline) as f32;
-
-        let max_advance = match line_break_mode {
-            LineBreaking::WordWrap => Some(inline_space),
-            LineBreaking::Clip | LineBreaking::Overflow => None,
+        let text_wrap_mode = match line_break_mode {
+            LineBreaking::WordWrap => TextWrapMode::Wrap,
+            LineBreaking::Clip | LineBreaking::Overflow => TextWrapMode::NoWrap,
         };
 
+        let inline_space = size.get_coord(inline) as f32;
+        let max_advance = Some(inline_space);
+
         let (font_ctx, layout_ctx) = ctx.text_contexts();
-        self.active_layout = self.build_and_break(font_ctx, layout_ctx, max_advance);
+        self.active_layout =
+            self.build_and_break(font_ctx, layout_ctx, text_wrap_mode, max_advance);
         let layout = &mut self.layouts[self.active_layout];
 
         layout.align(self.text_alignment, inline_space);

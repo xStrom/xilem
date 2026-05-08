@@ -9,7 +9,7 @@ use accesskit::{ActionRequest, NodeId, TreeId, TreeUpdate};
 use dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use kurbo::{Point, Rect, Size};
 use parley::fontique::{
-    Blob, Collection, CollectionOptions, FallbackKey, FamilyId, FontInfo, Script, SourceCache,
+    Blob, Collection, CollectionOptions, FamilyId, FontInfo, Script, SourceCache,
 };
 use parley::{FontContext, LayoutContext};
 use tracing::{debug, info_span, warn};
@@ -397,7 +397,7 @@ impl RenderRoot {
             // Make sure that all of these fonts are in the fallback chain for the Latin script.
             // <https://en.wikipedia.org/wiki/Script_(Unicode)#Latn>
             root.global_state.font_context.collection.append_fallbacks(
-                FallbackKey::new(Script::from_bytes(*b"Latn"), None),
+                Script::from_bytes(*b"Latn"),
                 families.iter().map(|(family, _)| *family),
             );
         }

@@ -17,8 +17,8 @@ use crate::core::{
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Rect, Size};
 use crate::layout::LenReq;
-use crate::parley::PlainEditor;
 use crate::parley::editing::{Generation, SplitString};
+use crate::parley::{PlainEditor, TextWrapMode};
 use crate::properties::{CaretColor, ContentColor, SelectionColor};
 use crate::theme::default_text_styles;
 use crate::util::bounding_box_to_rect;
@@ -882,38 +882,46 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
         // so we hardcode the assumption that inline axis is horizontal.
         let inline = Axis::Horizontal;
 
+        let text_wrap_mode = match self.word_wrap {
+            true => TextWrapMode::Wrap,
+            false => TextWrapMode::NoWrap,
+        };
+        // TODO: Always editing styles trashes the cache, so we should only do this
+        //       if the wrap mode changed. However, we want to override any other style edit too.
+        //       Alternatively can get rid of self.word_wrap and use only style based wrap rules.
+        // NOTE: Editing styles here is a side-effect that escapes measure and affects layout.
+        //       It should be fine, because editing wrap mode always requests layout,
+        //       and so this will at most be an early edit but guaranteed to be followed by layout.
+        self.editor
+            .edit_styles()
+            .insert(StyleProperty::TextWrapMode(text_wrap_mode));
+
         // TODO: The following max_advance calculation is very similar to Label widget's measure,
         //       so these could be more unified and share a single implementation.
 
         // Calculate the max advance for the inline axis, with None indicating unbounded.
-        let max_advance = match self.word_wrap {
-            true => {
-                if axis == inline {
-                    // Inline axis measurement ignores cross_length as a performance optimization.
-                    // The search complexity of dealing with it is just too prohibitive.
-                    // This is a common optimization also present on the web.
-                    match len_req {
-                        // Zero space will get us the length of longest unbreakable word
-                        LenReq::MinContent => Some(0.),
-                        // Unbounded space will get us the length of the unwrapped string
-                        LenReq::MaxContent => None,
-                        // Attempt to wrap according to the parent's request
-                        LenReq::FitContent(space) => Some(space),
-                    }
-                } else {
-                    // Block axis is dependent on the inline axis, so cross_length dominates.
-                    // If there is no explicit cross_length present, we fall back to inline defaults.
-                    match len_req {
-                        // Fallback is inline axis MinContent
-                        LenReq::MinContent => cross_length.or(Some(0.)),
-                        // Fallback is inline axis MaxContent, even for FitContent, because
-                        // as we don't have the inline space bound we'll consider it unbounded.
-                        LenReq::MaxContent | LenReq::FitContent(_) => cross_length,
-                    }
-                }
+        let max_advance = if axis == inline {
+            // Inline axis measurement ignores cross_length as a performance optimization.
+            // The search complexity of dealing with it is just too prohibitive.
+            // This is a common optimization also present on the web.
+            match len_req {
+                // Zero space will get us the length of longest unbreakable word
+                LenReq::MinContent => Some(0.),
+                // Unbounded space will get us the length of the unwrapped string
+                LenReq::MaxContent => None,
+                // Attempt to wrap according to the parent's request
+                LenReq::FitContent(space) => Some(space),
             }
-            // If we're never wrapping, then there's no max advance.
-            false => None,
+        } else {
+            // Block axis is dependent on the inline axis, so cross_length dominates.
+            // If there is no explicit cross_length present, we fall back to inline defaults.
+            match len_req {
+                // Fallback is inline axis MinContent
+                LenReq::MinContent => cross_length.or(Some(0.)),
+                // Fallback is inline axis MaxContent, even for FitContent, because
+                // as we don't have the inline space bound we'll consider it unbounded.
+                LenReq::MaxContent | LenReq::FitContent(_) => cross_length,
+            }
         }
         .map(|v| v as f32);
 
@@ -953,16 +961,23 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
         let inline = Axis::Horizontal;
 
         let inline_space = size.get_coord(inline) as f32;
-
-        let max_advance = match self.word_wrap {
-            true => Some(inline_space),
-            false => None,
-        };
+        let max_advance = Some(inline_space);
 
         if self.last_max_advance != max_advance {
             self.editor.set_width(max_advance);
             self.last_max_advance = max_advance;
         }
+
+        let text_wrap_mode = match self.word_wrap {
+            true => TextWrapMode::Wrap,
+            false => TextWrapMode::NoWrap,
+        };
+        // TODO: Always editing styles trashes the cache, so we should only do this
+        //       if the wrap mode changed. However, we want to override any other style edit too.
+        //       Alternatively can get rid of self.word_wrap and use only style based wrap rules.
+        self.editor
+            .edit_styles()
+            .insert(StyleProperty::TextWrapMode(text_wrap_mode));
 
         let new_generation = self.editor.generation();
         if new_generation != self.rendered_generation {
